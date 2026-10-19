@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 295 331.982">
+  <defs>
+    <style>
+      .cls-1{fill:none;stroke:#ffffff;stroke-width:10;stroke-miterlimit:10}
+      .cls-2{fill:#1960c5}
+      .cls-3{fill:#4aa6fd}
+      .cls-4{fill:url(#Light_Blue)}
+      .cls-5{fill:url(#Dark_Blue)}
+      .cls-6{fill:url(#Medium_Blue)}
+    </style>
+    <linearGradient id="Light_Blue" x1="112.497" y1="0" x2="112.497" y2="161.715" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4aa6fd"/>
+      <stop offset="1" stop-color="#3089f3"/>
+    </linearGradient>
+    <linearGradient id="Dark_Blue" x1="140.052" y1="147.535" x2="309.75" y2="317.232" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1960c5"/>
+      <stop offset="1" stop-color="#15499c"/>
+    </linearGradient>
+    <linearGradient id="Medium_Blue" x1="74.995" y1="89.495" x2="74.995" y2="331.971" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2380e1"/>
+      <stop offset="1" stop-color="#1564dc"/>
+    </linearGradient>
+  </defs>
+  <title>Untitled-1</title>
+  <g id="Asset_8" data-name="Asset 8">
+    <g>
+      <g>
+        <path d="M0 80.829" class="cls-1"/>
+        <path d="M160 80.829 L220 46.188 L220 115.47 Z" class="cls-2"/>
+        <path d="M230.091 202.073 L230.01 132.796 L290.005 167.434 Z" class="cls-3"/>
+        <path d="M9.995 80.832 L150 0 L215 37.528 L140 80.829 L215 124.13 L149.901 161.715 Z" class="cls-4"/>
+        <path d="M154.802 170.433 L220.01 132.785 L220.111 219.393 L295 176.098 L295 251.147 L154.99 331.982 Z" class="cls-5"/>
+        <path d="M5 164.545 L5 89.495 L144.802 170.318 L144.99 331.971 L80 294.449 L80 207.846 Z" class="cls-6"/>
+      </g>
+    </g>
+  </g>
+</svg>

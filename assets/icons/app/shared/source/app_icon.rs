@@ -5,83 +5,82 @@ pub fn rgba(size: usize) -> Result<Vec<u8>, String> {
         return Err("icon size must be 1..=2048".into());
     }
     type P = (f32, f32);
+    enum Paint {
+        Solid([f32; 3]),
+        /// Linear gradient in SVG user-space units (gradientUnits="userSpaceOnUse").
+        Linear { from: P, to: P, c0: [f32; 3], c1: [f32; 3] },
+    }
+    fn hex(c: u32) -> [f32; 3] {
+        [((c >> 16) & 255) as f32, ((c >> 8) & 255) as f32, (c & 255) as f32]
+    }
     // Coverage buffer at 4x4 samples per pixel (2x2 for big sizes), averaged down at the end.
     let ss = if size > 512 { 2 } else { 4 };
     let n = size * ss;
     let mut buf = vec![[0u8; 4]; n * n];
-    let s = n as f32 / 412.217; // SVG units -> samples: the logo fills the height
-    let ox = (n as f32 - 357.0 * s) / 2.0; // and is centred sideways
-    // Fill a convex polygon given in SVG units.
-    let mut fill = |pts: &[P], col: [u8; 3]| {
+    let s = n as f32 / 331.982; // SVG units -> samples: the logo fills the height
+    let ox = (n as f32 - 295.0 * s) / 2.0; // and is centred sideways
+    // Fill a simple (possibly concave) polygon given in SVG units, even-odd rule.
+    let mut fill = |pts: &[P], paint: &Paint| {
         let v: Vec<P> = pts.iter().map(|p| (ox + p.0 * s, p.1 * s)).collect();
         let (top, bottom) = v.iter().fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.1), b.max(p.1)));
+        let mut xs: Vec<f32> = Vec::new();
         for y in ((top - 0.5).ceil() as i32).max(0)..=((bottom - 0.5).floor() as i32).min(n as i32 - 1) {
             let cy = y as f32 + 0.5;
-            let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+            xs.clear();
             for i in 0..v.len() {
                 let (a, b) = (v[i], v[(i + 1) % v.len()]);
                 if (a.1 <= cy) != (b.1 <= cy) {
-                    let x = a.0 + (cy - a.1) / (b.1 - a.1) * (b.0 - a.0);
-                    lo = lo.min(x);
-                    hi = hi.max(x);
+                    xs.push(a.0 + (cy - a.1) / (b.1 - a.1) * (b.0 - a.0));
                 }
             }
-            if lo > hi {
-                continue;
-            }
-            for x in ((lo - 0.5).ceil() as i32).max(0)..=((hi - 0.5).floor() as i32).min(n as i32 - 1) {
-                buf[y as usize * n + x as usize] = [col[0], col[1], col[2], 255];
+            xs.sort_by(|a, b| a.total_cmp(b));
+            for pair in xs.chunks_exact(2) {
+                for x in ((pair[0] - 0.5).ceil() as i32).max(0)..=((pair[1] - 0.5).floor() as i32).min(n as i32 - 1) {
+                    let col = match paint {
+                        Paint::Solid(c) => *c,
+                        Paint::Linear { from, to, c0, c1 } => {
+                            let (px, py) = ((x as f32 + 0.5 - ox) / s, cy / s);
+                            let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+                            let t = (((px - from.0) * dx + (py - from.1) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+                            [
+                                c0[0] + (c1[0] - c0[0]) * t,
+                                c0[1] + (c1[1] - c0[1]) * t,
+                                c0[2] + (c1[2] - c0[2]) * t,
+                            ]
+                        }
+                    };
+                    buf[y as usize * n + x as usize] =
+                        [col[0].round() as u8, col[1].round() as u8, col[2].round() as u8, 255];
+                }
             }
         }
     };
-    // Faces: each is a few overlapping convex pieces (the filler only does convex shapes).
-    let (light, mid, dark) = ([96, 158, 236], [58, 136, 238], [55, 108, 197]);
-    fill(&[(3.5, 105.9), (177.0, 5.8), (263.4, 55.6), (263.8, 156.0), (177.0, 406.4)], light);
-    fill(&[(177.0, 206.1), (263.8, 156.0), (350.5, 206.2), (350.5, 306.3), (177.0, 406.4)], light);
-    fill(&[(3.5, 105.9), (177.0, 206.1), (177.0, 406.4)], mid);
-    fill(&[(3.5, 105.9), (3.5, 205.7), (90.3, 256.2), (177.0, 206.1)], mid);
-    fill(&[(177.0, 206.1), (90.3, 256.2), (90.0, 356.2), (177.0, 406.4)], mid);
-    fill(&[(264.1, 155.8), (177.0, 206.1), (177.0, 406.4), (263.8, 256.2)], dark);
-    fill(&[(263.8, 256.2), (350.5, 206.2), (350.5, 306.3), (177.0, 406.4)], dark);
-    fill(&[(177.0, 206.1), (177.0, 406.4), (350.5, 306.3)], dark);
-    fill(&[(263.8, 55.9), (263.8, 156.0), (177.1, 105.9)], dark);
-    // White edge lines, 10 units wide: a rectangle per segment and a disc at each inner corner.
-    let white = [255, 255, 255];
-    let mut stroke = |pts: &[P], closed: bool| {
-        let m = pts.len();
-        for i in 0..(if closed { m } else { m - 1 }) {
-            let (a, b) = (pts[i], pts[(i + 1) % m]);
-            let l = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
-            let (nx, ny) = (-(b.1 - a.1) / l * 5.0, (b.0 - a.0) / l * 5.0);
-            fill(&[(a.0 + nx, a.1 + ny), (b.0 + nx, b.1 + ny), (b.0 - nx, b.1 - ny), (a.0 - nx, a.1 - ny)], white);
-        }
-        for c in &pts[if closed { 0 } else { 1 }..if closed { m } else { m - 1 }] {
-            let disc: Vec<P> = (0..16)
-                .map(|k| {
-                    let t = k as f32 * std::f32::consts::TAU / 16.0;
-                    (c.0 + 5.0 * t.cos(), c.1 + 5.0 * t.sin())
-                })
-                .collect();
-            fill(&disc, white);
-        }
-    };
-    stroke(&[(263.8, 55.9), (177.1, 105.9), (263.8, 156.0), (263.8, 256.2), (350.6, 206.1)], false);
-    stroke(&[(5.0, 105.9), (178.5, 206.1), (178.5, 406.4)], false);
-    stroke(&[(177.0, 206.1), (263.8, 156.0)], false);
-    stroke(
+    // Shapes, in the same paint order as the SVG.
+    // Small dark-blue triangle (top right).
+    fill(&[(160.0, 80.829), (220.0, 46.188), (220.0, 115.47)], &Paint::Solid(hex(0x1960c5)));
+    // Small light-blue triangle (right).
+    fill(&[(230.091, 202.073), (230.01, 132.796), (290.005, 167.434)], &Paint::Solid(hex(0x4aa6fd)));
+    // Light blue face (top).
+    fill(
+        &[(9.995, 80.832), (150.0, 0.0), (215.0, 37.528), (140.0, 80.829), (215.0, 124.13), (149.901, 161.715)],
+        &Paint::Linear { from: (112.497, 0.0), to: (112.497, 161.715), c0: hex(0x4aa6fd), c1: hex(0x3089f3) },
+    );
+    // Dark blue face (right).
+    fill(
         &[
-            (178.5, 5.8),
-            (5.0, 105.9),
-            (5.0, 206.1),
-            (91.7, 256.2),
-            (91.7, 356.4),
-            (178.5, 406.4),
-            (352.0, 306.3),
-            (352.0, 206.1),
-            (265.2, 156.0),
-            (265.2, 55.9),
+            (154.802, 170.433),
+            (220.01, 132.785),
+            (220.111, 219.393),
+            (295.0, 176.098),
+            (295.0, 251.147),
+            (154.99, 331.982),
         ],
-        true,
+        &Paint::Linear { from: (140.052, 147.535), to: (309.75, 317.232), c0: hex(0x1960c5), c1: hex(0x15499c) },
+    );
+    // Medium blue face (left).
+    fill(
+        &[(5.0, 164.545), (5.0, 89.495), (144.802, 170.318), (144.99, 331.971), (80.0, 294.449), (80.0, 207.846)],
+        &Paint::Linear { from: (74.995, 89.495), to: (74.995, 331.971), c0: hex(0x2380e1), c1: hex(0x1564dc) },
     );
     // Average each ss x ss block down to one pixel (straight alpha = covered share).
     let mut rgba = Vec::with_capacity(size * size * 4);
