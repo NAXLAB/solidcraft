@@ -662,6 +662,13 @@ pub(crate) fn disconnect_background_chats(app: &mut SolveApp, wait: bool) {
     }
 }
 
+/// Stop only the hidden conversations whose endpoint permission was revoked.
+pub(crate) fn disconnect_background_endpoint(app: &mut SolveApp, id: &str) {
+    for slot in app.docs.background_mut() {
+        slot.agent_chat.disconnect_endpoint(&mut slot.session, id);
+    }
+}
+
 /// Close several tabs (Close Other Tabs, Close All Tabs; #3055): each with unsaved changes asks
 /// "save changes?" in turn, the others close; Cancel keeps the tabs not closed yet.
 pub fn close_many(app: &mut SolveApp, mut tabs: Vec<usize>) {
@@ -1216,6 +1223,11 @@ pub enum Answer {
 pub fn prompt(app: &mut SolveApp, ctx: &egui::Context) {
     let _language = crate::i18n::scope(&app.preferences.language);
     quit_step(app);
+    // Saved, it asks the Capture Position question first (#9736): that question is the one to
+    // answer meanwhile, not this one again.
+    if app.tree.capture_prompt.is_some() {
+        return;
+    }
     let Some(i) = app.docs.closing else { return };
     let name = tabs_info(app).get(i).map(|x| x.0.clone()).unwrap_or_default();
     let name_display = crate::i18n::tr_name(&name);
@@ -1274,7 +1286,7 @@ pub fn prompt(app: &mut SolveApp, ctx: &egui::Context) {
 
 /// Act on the "save changes?" answer (also the control channel's `ui.documents {answer}`).
 pub fn answer_prompt(app: &mut SolveApp, answer: Answer) {
-    if app.file_picker_busy() {
+    if app.file_picker_busy() || app.tree.capture_prompt.is_some() {
         return;
     }
     let Some(i) = app.docs.closing else { return };
@@ -1310,6 +1322,11 @@ pub fn answer_prompt(app: &mut SolveApp, answer: Answer) {
 
 /// Resume Close/Quit only after Save As has answered and the write succeeded.
 pub(crate) fn saved_for_close(app: &mut SolveApp) {
+    // Save asks the Capture Position question first while a move isn't captured (#9736): the
+    // close waits for its answer.
+    if app.tree.capture_prompt.is_some() {
+        return;
+    }
     if !std::mem::take(&mut app.docs.saving) || app.docs.closing.is_none() {
         return;
     }

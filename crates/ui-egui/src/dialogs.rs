@@ -135,10 +135,14 @@ crate::dialog_descriptor::dialog_descriptors! {
             FeatureKind::ConstructionPlane { plane: PlaneRef::Tangent { angle, .. } }) {
             angle: String = "0 deg".into() => angle.as_ref().map_or_else(|| "0 deg".to_string(), ToString::to_string),
         } => json!({"angle": angle});
+        // Uniform, or per axis (#10782): then `factor` is X's, beside Y's and Z's.
         Scale("solid.scale", "SCALE", [("Bodies", BODIES, true)],
-            FeatureKind::Scale { factor, .. }) {
-            factor: String = "2".into() => factor.to_string(),
-        } => json!({"factor": factor});
+            FeatureKind::Scale { factor, factors, .. }) {
+            factor: String = "2".into() => factors.as_ref().map_or_else(|| factor.to_string(), |f| f[0].to_string()),
+            per_axis: bool = false => factors.is_some(),
+            factor_y: String = "2".into() => factors.as_ref().map_or_else(|| factor.to_string(), |f| f[1].to_string()),
+            factor_z: String = "2".into() => factors.as_ref().map_or_else(|| factor.to_string(), |f| f[2].to_string()),
+        } => if *per_axis { json!({"factors": [factor, factor_y, factor_z]}) } else { json!({"factor": factor}) };
         OffsetFaces("solid.offset_face", "OFFSET FACE", [("Faces", FACES, true)],
             FeatureKind::OffsetFace { distance, .. }) {
             distance: String = "2 mm".into() => shown_expr(distance, ValueKind::Length),
@@ -1440,7 +1444,8 @@ impl Dialog {
             Kind::Pipe { diameter, .. } => ("Diameter", ValueKind::Length, diameter),
             Kind::Stock { margin } => ("Margin", ValueKind::Length, margin),
             Kind::AnglePlane { angle } => ("Angle", ValueKind::Angle, angle),
-            Kind::Scale { factor } => ("Scale", ValueKind::Unitless, factor),
+            Kind::Scale { per_axis: true, .. } => return None,
+            Kind::Scale { factor, .. } => ("Scale", ValueKind::Unitless, factor),
             Kind::OffsetFaces { distance } => ("Distance", ValueKind::Length, distance),
             Kind::Sheet(k) => return k.primary(&self.inputs),
             Kind::Surface(k) => return k.primary(),
@@ -2946,6 +2951,17 @@ fn stored_input_reference_key(d: &Dialog, index: usize) -> Option<&'static str> 
         (Kind::PatternRect { .. }, 2) => Some("dir2"),
         (Kind::PatternCirc { .. }, 1) => Some("axis"),
         _ => None,
+    }
+}
+
+/// An explicit revolve axis as its dialog holds it, in the world: the origin evaluated with the
+/// parameters (an untouched axis is restored as saved, expressions included:
+/// `solidcraft_engine::frames::to_local`). An origin that cannot be evaluated is kept as saved.
+pub(crate) fn line_axis_value(s: &Session, frame: &solidcraft_engine::doc::Mat, origin: &solidcraft_engine::doc::PointExpr, dir: Vec3) -> Value {
+    let dir_world = pt(solidcraft_engine::doc::apply_vector(frame, dir));
+    match s.doc.eval_point(origin) {
+        Ok(at) => json!({"origin": pt(solidcraft_engine::doc::apply_point(frame, at)), "dir": dir_world}),
+        Err(_) => json!({"origin": origin, "dir": dir_world}),
     }
 }
 
@@ -6035,10 +6051,15 @@ fn stored_frames(s: &Session) -> Option<Vec<(String, solidcraft_engine::doc::Mat
 
 /// The edge of a visible body through (or nearest) a point.
 pub(crate) fn edge_sel(s: &Session, p0: Vec3) -> Option<Sel> {
+    edge_sel_on(s, None, p0)
+}
+
+/// [`edge_sel`], searching only the body called `only` when given (a pick saved on that body).
+pub(crate) fn edge_sel_on(s: &Session, only: Option<&str>, p0: Vec3) -> Option<Sel> {
     let st = crate::open_meshing::session_world(s);
     let frames = stored_frames(s);
     let mut best: Option<(f64, Sel)> = None;
-    for b in &st.bodies {
+    for b in st.bodies.iter().filter(|b| only.is_none_or(|n| b.name == n)) {
         let p = stored_on(&frames, &b.name, p0);
         let m = b.mesh();
         for (i, e) in m.edges.iter().enumerate() {
@@ -6053,6 +6074,11 @@ pub(crate) fn edge_sel(s: &Session, p0: Vec3) -> Option<Sel> {
 
 /// The body face containing a point (nearest triangle).
 pub(crate) fn face_sel(s: &Session, p0: Vec3) -> Option<Sel> {
+    face_sel_on(s, None, p0)
+}
+
+/// [`face_sel`], searching only the body called `only` when given (a pick saved on that body).
+pub(crate) fn face_sel_on(s: &Session, only: Option<&str>, p0: Vec3) -> Option<Sel> {
     use solidcraft_engine::kernel::{self, FaceSurface};
 
     if !p0.is_finite() {
@@ -6061,7 +6087,7 @@ pub(crate) fn face_sel(s: &Session, p0: Vec3) -> Option<Sel> {
     let st = crate::open_meshing::session_world(s);
     let frames = stored_frames(s);
     let mut best: Option<(f64, &solidcraft_engine::doc::ModelBody, usize, Vec3)> = None;
-    for b in &st.bodies {
+    for b in st.bodies.iter().filter(|b| only.is_none_or(|n| b.name == n)) {
         let p = stored_on(&frames, &b.name, p0);
         let m = b.mesh();
         for (t, f) in m.triangles.iter().zip(&m.tri_face) {
@@ -6370,10 +6396,7 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             let mut d = start("solid.revolve")?;
             let frame = feature_frame(s, f.component);
             let stored_axis = match axis {
-                AxisRef::Line { origin, dir } => Some(json!({
-                    "origin": pt(solidcraft_engine::doc::apply_point(&frame, origin.0)),
-                    "dir": pt(solidcraft_engine::doc::apply_vector(&frame, dir.0))
-                })),
+                AxisRef::Line { origin, dir } => Some(line_axis_value(s, &frame, origin, dir.0)),
                 // An edge or face that is gone stays the reference until another is picked.
                 AxisRef::Model { geo } if model_axis_sel(s, geo).is_none() => serde_json::to_value(geo).ok(),
                 _ => None,
@@ -7162,16 +7185,13 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             }
             d
         }
-        FeatureKind::Scale { bodies, origin, factors, .. } => {
+        FeatureKind::Scale { bodies, origin, .. } => {
             let mut d = start("solid.scale")?;
             d.kind = Kind::simple_restore(&f.kind)?;
             if let Some(inp) = d.inputs.first_mut() {
                 inp.items = bodies.iter().map(|n| Sel::Body { name: n.to_string() }).collect();
             }
             d.extra.insert("origin".into(), pt3(origin.0));
-            if let Some(f) = factors {
-                d.extra.insert("factors".into(), json!(f));
-            }
             d
         }
         FeatureKind::OffsetFace { faces, body, .. } => {

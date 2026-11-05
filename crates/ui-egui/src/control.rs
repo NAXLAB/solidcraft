@@ -312,6 +312,7 @@ fn execute(app: &mut SolveApp, id: &str, params: Value) -> Result<Value, String>
                 | "view.grid"
                 | "view.ground_shadow"
                 | "view.navigation_bar"
+                | "view.ribbon_tabs_only"
                 | "view.next_tab"
                 | "view.previous_tab"
                 | "view.layout"
@@ -836,6 +837,8 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value) ->
             DESIGN_WATCH.publish(&app.session.document_id, revision);
             ok(json!({"document_id": app.session.document_id, "revision": revision}))
         }
+        // What the MCP server bridged to this app shapes its output with (Preferences › AI).
+        "mcp.options" => ok(json!({"compact": app.preferences.mcp_compact})),
         "ui.messages" => ok(crate::messages::control(app, p)),
         "ui.inspect" => ok(json!({
             "render": crate::render_workspace::inspect_state(app),
@@ -1336,6 +1339,10 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value) ->
                     },
                     None => crate::context_menu::Target::Viewport,
                 };
+                // A right-click opens a menu only on something that is there.
+                if let Err(e) = crate::context_menu::check_target(app, &target) {
+                    return err(e);
+                }
                 crate::context_menu::request_open(app, egui::pos2(x as f32, y as f32), target);
                 return ok(json!({"pending": true}));
             }

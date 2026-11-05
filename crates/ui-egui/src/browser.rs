@@ -211,6 +211,9 @@ pub struct TreeState {
     /// Show components marked out of the History bar anyway (#10393). Held by the session, like
     /// the bar's Show All toggle; the History controls' menu carries the switch.
     pub history_show_hidden: bool,
+    /// The History bar's Show All toggle: every component's features, not only the active or
+    /// picked one's (#2880).
+    pub history_show_all: bool,
     /// The feature of the face or edge last picked in the view, so a new pick scrolls the
     /// history to it once.
     pub view_pick: Option<u64>,
@@ -477,6 +480,17 @@ fn scope_path(scope: &str) -> Vec<u64> {
     scope.strip_prefix("o:").map(|ids| ids.split('/').filter_map(|id| id.parse().ok()).collect()).unwrap_or_default()
 }
 
+/// Whether a folder or group's scope key is a row the browser draws for `component`: the design's
+/// own (`c0`, the root only), or a placement of it, spelt as the browser keys it (`o:12/3`, not
+/// `o:012/3`: the rows' state is kept by that key).
+pub(crate) fn scope_shows(app: &SolveApp, scope: &str, component: u64) -> bool {
+    if component == 0 && scope == "c0" {
+        return true;
+    }
+    let path = scope_path(scope);
+    is_placement_key(scope) && occurrence_key(&path) == scope && app.session.occurrence_placement(&path).is_ok_and(|p| p.component == component)
+}
+
 /// Paste on a Bodies or Sketches folder or group: copied (or cut) bodies, or copied sketches and
 /// features, go into its component (that placement), and into the group.
 fn paste_item(app: &SolveApp, component: u64, scope: &str, folder: &str, group: Option<u64>) -> Item {
@@ -557,11 +571,18 @@ pub fn folded_folder_items(app: &SolveApp, target: &Target) -> Vec<Item> {
         },
         _ => return Vec::new(),
     };
-    if !bodies_folded(app, comp, &scope, entries(app, comp, "bodies").len()) {
+    let count = entries(app, comp, "bodies").len();
+    if !bodies_folded(app, comp, &scope, count) {
         return Vec::new();
     }
-    let items =
-        folder_items(app, comp, "bodies", &scope).into_iter().filter(|i| matches!(i.id.as_str(), "component.from_bodies" | "ui.groupSelected"));
+    // Components from a component's only body would just nest it one level deeper.
+    let items: Vec<_> = folder_items(app, comp, "bodies", &scope)
+        .into_iter()
+        .filter(|i| i.id == "ui.groupSelected" || (i.id == "component.from_bodies" && count > 1))
+        .collect();
+    if items.is_empty() {
+        return items;
+    }
     std::iter::once(Item::sep()).chain(items).collect()
 }
 
@@ -3627,6 +3648,18 @@ pub(crate) fn panel_pos(app: &SolveApp) -> Pos2 {
 /// The Capture Position question stands for saving.
 pub const SAVE: &str = "__save";
 
+/// It stands for Save As (`__save_as:<extension>:<name>`), which needs the question as Save
+/// does: a file can't hold a move not captured yet (#9736).
+const SAVE_AS: &str = "__save_as:";
+
+/// It stands for the browser build's Download design.
+pub const DOWNLOAD: &str = "__download";
+
+/// The question standing for Save As under `name` with `extension`.
+pub fn save_as_question(name: &str, extension: &str) -> String {
+    format!("{SAVE_AS}{extension}:{name}")
+}
+
 /// Does starting `what` (a command id or [`SAVE`]) need the Capture Position question first?
 /// Yes while components were moved without capturing their positions, except for the commands
 /// that capture, revert or keep moving.
@@ -3654,6 +3687,8 @@ pub fn answer_capture(app: &mut SolveApp, action: &str) -> Result<(), String> {
         "revert" => drop(app.run("component.revert_position", json!({}))),
         "cancel" => {
             app.tree.capture_prompt = None;
+            // A tab waiting to close after the save stays open (#9736).
+            crate::documents::saved_for_close(app);
             return Ok(());
         }
         other => return Err(format!("unknown answer `{other}` (capture, revert, cancel)")),
@@ -3662,8 +3697,17 @@ pub fn answer_capture(app: &mut SolveApp, action: &str) -> Result<(), String> {
     app.tree.occurrence_move = None;
     if what == SAVE {
         crate::toolbar::save(app);
+    } else if let Some((extension, name)) = what.strip_prefix(SAVE_AS).and_then(|rest| rest.split_once(':')) {
+        crate::toolbar::save_as_named(app, name, extension);
+    } else if what == DOWNLOAD {
+        crate::toolbar::download_design(app);
     } else {
         app.start(&what);
+    }
+    // A save that finished here (no thread, or nothing to write) answers a tab waiting to close,
+    // as the "save changes?" answer does; one under way answers when it ends.
+    if app.saving.is_none() && !app.file_picker_busy() {
+        crate::documents::saved_for_close(app);
     }
     Ok(())
 }

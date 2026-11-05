@@ -1149,6 +1149,8 @@ preference_settings! {
     graphics_adapter: String = String::new(), PAGE_GRAPHICS;
     /// Soft contact shading in the GPU viewport; optional and applied immediately.
     ambient_occlusion: bool = false, PAGE_GRAPHICS;
+    /// Restore the shadow plane at the lowest visible body, including above the origin (#9838).
+    ground_shadow_follows_model: bool = false, PAGE_GRAPHICS => check_id("prefs.ground_shadow_follows_model");
     /// Shade the viewport in linear light with a sky fill, so dark parts keep their shape
     /// (#7974). Off by default: the viewport shades as it always has.
     dark_parts_shading: bool = false, PAGE_GRAPHICS => check_id("prefs.dark_parts_shading");
@@ -1301,6 +1303,10 @@ preference_settings! {
     /// blinks there, and a running command that sits in a drop-down marks its section label. Off
     /// by default: the ribbon stays as it was.
     ribbon_reveal: bool = false, PAGE_LAYOUT;
+    /// Fold the ribbon to its tab row, so the view has the room its panels took (#10112). A tab's
+    /// click shows its panels over the view until a command starts or the pointer leaves them.
+    /// Off by default: the whole ribbon shows. `view.ribbon_tabs_only` switches it.
+    ribbon_tabs_only: bool = false, PAGE_LAYOUT;
     /// Where a dialog's OK and Cancel sit: under its inputs (the default) or in its title row (#6708).
     dialog_buttons: crate::ui_kit::DialogButtons = Default::default(), PAGE_LAYOUT;
     /// Where notices and offers stack: the view's bottom-right corner (the default) or the bottom
@@ -1311,6 +1317,8 @@ preference_settings! {
     /// Show the ribbon's panel drop-downs as a grid of large icons, their names in the tooltips,
     /// instead of a list of small icons with names (#4739).
     ribbon_icon_grid: bool = false, PAGE_LAYOUT;
+    /// After a ribbon panel menu is open, hover another panel to switch to its menu.
+    ribbon_menus_follow_hover: bool = false, PAGE_LAYOUT;
     /// Leave the commands the ribbon shows as buttons (pinned ones) out of its panel drop-downs,
     /// which then list only the rest (#4739).
     ribbon_menus_skip_pinned: bool = false, PAGE_LAYOUT;
@@ -1557,6 +1565,13 @@ preference_settings! {
     agent_chat_window: Option<[f32; 4]> = None, PAGE_ASSISTANT;
     /// Changes the agent may make for one message; 0 is no limit.
     agent_chat_turn_limit: u32 = crate::agent_chat::gate::DEFAULT_TURN_LIMIT, PAGE_ASSISTANT;
+    /// Custom instructions (#8220): text the agent chat adds to its system note when a session
+    /// starts (`agent_chat::acp::system_note`). No page reset discards this user-authored text.
+    agent_instructions: String = String::new();
+    /// Compact output for agents connected through the MCP server (`solidcraft-cli mcp`, docs/mcp.md):
+    /// `inspect_design` summarises sketches and tool JSON is not pretty-printed. Off: as always.
+    /// The server asks once per agent session (`mcp.options`), so a change applies to the next one.
+    mcp_compact: bool = false, PAGE_ASSISTANT;
 
     // ---- Sketch / selection modifier bindings (classic defaults; alternate mapping is opt-in) ----
     /// Modifier that suppresses sketch auto-snap while drawing or dragging a sketch point.
@@ -6105,6 +6120,7 @@ mod tests {
             ("dialog_buttons", json!("top"), PAGE_LAYOUT),
             ("toast_place", json!("centre"), PAGE_LAYOUT),
             ("ribbon_icon_grid", json!(true), PAGE_LAYOUT),
+            ("ribbon_menus_follow_hover", json!(true), PAGE_LAYOUT),
             ("ribbon_menus_skip_pinned", json!(true), PAGE_LAYOUT),
             ("timeline_left", json!(true), PAGE_LAYOUT),
             ("timeline_under_browser", json!(true), PAGE_LAYOUT),
@@ -6593,6 +6609,25 @@ mod tests {
         app.ui.dark = false;
         super::apply(&mut app, &ctx);
         assert!(!app.ui.dark, "an explicit theme does not follow the desktop");
+    }
+
+    /// Compact output for MCP agents: off by default, a checkbox on the AI page (there with the
+    /// chat off too), reported to the bridged MCP server as `mcp.options`, reset by Restore Defaults.
+    #[test]
+    fn mcp_compact_output_is_an_ai_preference_the_server_reads() {
+        use serde_json::json;
+        let mut h = crate::scenario::Harness::new();
+        assert_eq!(h.call("mcp.options", json!({}))["result"], json!({"compact": false}));
+        h.call("ui.prefs", json!({"ai_features": false, "open": "AI"}));
+        h.frames(3);
+        assert!(crate::scenario::handle_at("prefs:mcp_compact").is_some(), "the checkbox is on the AI page with the chat off");
+        // The page scrolls, so the setting is turned on as an agent would, not by a click.
+        h.call("ui.prefs", json!({"mcp_compact": true}));
+        h.frames(2);
+        assert!(h.app.preferences.mcp_compact);
+        assert_eq!(h.call("mcp.options", json!({}))["result"], json!({"compact": true}));
+        h.call("ui.prefs", json!({"button": "defaults"}));
+        assert_eq!(h.call("mcp.options", json!({}))["result"], json!({"compact": false}));
     }
 
     /// Theme files (#2255): a built-in one and an imported one turn on through `ui.prefs`, the
@@ -9817,6 +9852,43 @@ mod tests {
         assert!(!h.app.preferences.select_hidden_edges);
         h.call("ui.prefs", json!({"button":"cancel"}));
         assert!(h.app.preferences.select_hidden_edges);
+    }
+
+    #[test]
+    fn ground_shadow_placement_follows_preferences_transactions() {
+        assert!(!Prefs::default().ground_shadow_follows_model);
+        let old: Prefs = serde_json::from_value(json!({"msaa":4})).unwrap();
+        assert!(!old.ground_shadow_follows_model);
+        assert!(!lenient(&json!({"ground_shadow_follows_model":"yes"})).ground_shadow_follows_model);
+        let mut h = crate::scenario::Harness::new();
+        h.app.ui.ground_shadow = true;
+        let camera = h.app.cam;
+        let design = h.app.session.doc.to_json();
+        h.call("ui.prefs", json!({"open":"Graphics"}));
+        super::reveal_preference(&mut h, "prefs:ground_shadow_follows_model");
+        let checkbox = crate::scenario::handle_at("prefs:ground_shadow_follows_model").unwrap();
+        h.call("ui.click", json!({"x":checkbox.x,"y":checkbox.y}));
+        assert!(h.app.preferences.ground_shadow_follows_model);
+        let mut restored = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        restored.load_prefs(&h.app.prefs());
+        assert!(!restored.preferences.ground_shadow_follows_model, "an unapplied change is not saved");
+        h.call("ui.prefs", json!({"button":"cancel"}));
+        assert!(!h.app.preferences.ground_shadow_follows_model);
+        h.call("ui.prefs", json!({"ground_shadow_follows_model":true}));
+        assert!(!h.app.prefs_window.open, "programmatic changes do not open Preferences");
+        restored.load_prefs(&h.app.prefs());
+        assert!(restored.preferences.ground_shadow_follows_model);
+        h.call("ui.prefs", json!({"open":"Graphics", "button":"defaults"}));
+        assert!(!h.app.preferences.ground_shadow_follows_model);
+        h.call("ui.prefs", json!({"button":"cancel"}));
+        assert!(h.app.preferences.ground_shadow_follows_model, "Cancel restores the saved choice");
+        h.call("ui.prefs", json!({"open":"Graphics", "button":"defaults"}));
+        h.call("ui.prefs", json!({"button":"apply"}));
+        restored.load_prefs(&h.app.prefs());
+        assert!(!restored.preferences.ground_shadow_follows_model, "Graphics defaults can be saved");
+        assert_eq!(h.app.cam, camera);
+        assert_eq!(h.app.session.doc.to_json(), design);
+        assert!(h.app.session.undo.is_empty());
     }
 
     #[test]

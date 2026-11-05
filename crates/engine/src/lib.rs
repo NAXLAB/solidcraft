@@ -55,6 +55,7 @@ pub use cmd::{
 pub use solidcraft_doc as doc;
 pub use solidcraft_doc::Visibility;
 pub use solidcraft_geom as geom;
+pub use solidcraft_geom::note;
 pub use solidcraft_io as io;
 pub use solidcraft_kernel as kernel;
 pub use solidcraft_profile as profile;
@@ -959,9 +960,16 @@ impl Session {
         }
     }
 
-    /// The design has changes not in its file: in the document, or in what is hidden.
+    /// The design has changes not in its file: in the document, in what is hidden, or a
+    /// component moved and not captured yet (#9736).
     pub fn is_dirty(&self) -> bool {
-        self.document_differs() || self.visibility != self.saved_visibility
+        self.document_differs() || self.visibility != self.saved_visibility || self.moved_uncaptured()
+    }
+
+    /// A component was moved and its position not captured yet (#9736). The placements of an
+    /// exploded view shown are not such a move: they last only while it is shown.
+    pub fn moved_uncaptured(&self) -> bool {
+        !self.pending_moves.is_empty() && !cmd::motion::shows_exploded_view(self)
     }
 
     /// The document is not the one its file holds: compared once per pair of documents and
